@@ -1564,6 +1564,7 @@ void backlightOffHandler() {
 void btnHandlerCommon(int button, bool state, IOEventFlags flags) {
   // wake up IF LCD power or Lock has a timeout (so will turn off automatically)
   if (lcdPowerTimeout || backlightTimeout || lockTimeout) {
+  	inactivityTimer = 0;
     if (((bangleFlags&JSBF_WAKEON_BTN1)&&(button==1)) ||
         ((bangleFlags&JSBF_WAKEON_BTN2)&&(button==2)) ||
         ((bangleFlags&JSBF_WAKEON_BTN3)&&(button==3)) ||
@@ -1572,7 +1573,6 @@ void btnHandlerCommon(int button, bool state, IOEventFlags flags) {
 #endif
         false){
       // if a 'hard' button, turn LCD on
-      inactivityTimer = 0;
       if (state) {
         bool ignoreBtnUp = false;
         if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON) && state) {
@@ -1595,12 +1595,6 @@ void btnHandlerCommon(int button, bool state, IOEventFlags flags) {
           return; // don't push button event if the LCD is off
         }
       }
-    } else {
-      // on touchscreen, keep LCD on if it was in previously
-      if (bangleFlags&JSBF_LCD_ON)
-        inactivityTimer = 0;
-      else // else don't push the event
-        return;
     }
   }
   // Handle case where pressing 'home' button repeatedly at just the wrong times
@@ -1646,7 +1640,7 @@ bool btnTouchHandler() {
   // if locked, ignore touch/swipe
   if (bangleFlags&JSBF_LOCKED) {
     touchLastState = touchLastState2 = touchStatus = TS_NONE;
-    return false;
+    return true;
   }
   // Detect touch/swipe
   TouchState state =
