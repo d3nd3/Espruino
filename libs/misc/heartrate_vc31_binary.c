@@ -62,9 +62,9 @@ bool hrm_new(int ppgValue, Vector3 *acc) {
   hrmInfo.raw = ppgValue;
   // Feed data into algorithm
   AlgoInputData_t inputData;
-  inputData.axes.x = acc->y >> 5;  // perpendicular to the direction of the arm
-  inputData.axes.y = acc->x >> 5;  // along the direction of the arm
-  inputData.axes.z = acc->z >> 5;
+  inputData.axes.x =  0;//  acc->y >> 5; perpendicular to the direction of the arm
+  inputData.axes.y = 0;  // acc->x >> 5 ;along the direction of the arm
+  inputData.axes.z = 0; //acc->z >> 5;
   inputData.ppgSample = vcInfo.ppgValue | (vcInfo.wasAdjusted ? 0x1000 : 0);
   inputData.envSample = vcInfo.envValue;
   hrmInfo.msSinceLastHRM += timeDiff;
