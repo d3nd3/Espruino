@@ -105,11 +105,12 @@ void _jswrap_promise_resolve_or_reject(JsVar *promise, JsVar *data, JsVar *fn) {
   if (chainedPromise) {
     //If we returned a promise...
     if (_jswrap_promise_is_promise(result)) {
-      // if we were given a promise, loop its 'then' in here
+      // points the child promise's settled/resolved firing
+      // to resolve the outer promise.
       JsVar *fnres = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queueresolve, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
       JsVar *fnrej = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queuereject, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
       if (fnres && fnrej) {
-
+        //the callbacks' have their this set outer promise.
         jsvObjectSetChild(fnres, JSPARSE_FUNCTION_THIS_NAME, chainedPromise); // bind 'this'
         jsvObjectSetChild(fnrej, JSPARSE_FUNCTION_THIS_NAME, chainedPromise); // bind 'this'
 
@@ -132,9 +133,9 @@ void _jswrap_promise_resolve_or_reject(JsVar *promise, JsVar *data, JsVar *fn) {
   jsvUnLock2(result, chainedPromise);
 }
 /*
+  We have been requested to resolve/reject a promise.
   STAGE ONE - VALIDATE
-  checks if promise has a onSettled handler.
-  also looks ahead down the linked list for a catch.
+  finds the nearest handler by iterating the chain.
 */
 void _jswrap_promise_resolve_or_reject_chain(JsVar *promise, JsVar *data, bool resolve) {
   const char *eventName = resolve ? JS_PROMISE_THEN_NAME : JS_PROMISE_CATCH_NAME;
@@ -142,14 +143,14 @@ void _jswrap_promise_resolve_or_reject_chain(JsVar *promise, JsVar *data, bool r
     jsExceptionHere(JSET_ERROR, "Resolving a Promise with a value that is a Promise is not currently supported");
     return;
   }
-  // if we didn't have a catch, traverse the chain looking for one
+  // find the nearest handler by iterating chain
   JsVar *fn = jsvObjectGetChildIfExists(promise, eventName);
   if (!fn) {
     JsVar *chainedPromise = jsvObjectGetChildIfExists(promise, "chain");
     while (chainedPromise) {
       fn = jsvObjectGetChildIfExists(chainedPromise, eventName);
       if (fn) {
-        //ResolveOrReject this descendent promise instead...
+        //We have found a handler! By doing so, we have made the chain smaller.
         _jswrap_promise_resolve_or_reject(chainedPromise, data, fn);
         jsvUnLock2(fn, chainedPromise);
         return;
@@ -159,22 +160,21 @@ void _jswrap_promise_resolve_or_reject_chain(JsVar *promise, JsVar *data, bool r
       chainedPromise = n;
     }
   }
-  //unable to find .then or .catch handler
-  //unable to find .then or .catch handler in any chain
+  //fn=true = Found handler in THIS parent.
+  //fn=false = No handler found at all.
 
   //========================
   //Sets resolved.!
   //========================
   if (resolve)
     jsvObjectSetChild(promise, JS_PROMISE_RESOLVED_NAME, data);
-  //fn either true or false from inner loop failure.
   if (fn) {
     //There was initial handler for THIS promise.
     _jswrap_promise_resolve_or_reject(promise, data, fn);
     jsvUnLock(fn);
   } else if (!resolve) {
-    //There was no initial handler for THIS promise and there was no handler for any chained promises.
-    //A promise has been rejected.
+    //No handler found! Thus it is unhandled.
+    //A promise has been rejected, but no handler set.
     JsVar *previouslyResolved = jsvFindChildFromString(promise, JS_PROMISE_RESOLVED_NAME);
     if (!previouslyResolved) {
       jsExceptionHere(JSET_ERROR, "Unhandled promise rejection: %v", data);
@@ -462,7 +462,7 @@ void _jswrap_promise_add(JsVar *parent, JsVar *callback, bool resolve) {
       resolveImmediatelyValue = jsvSkipNameAndUnLock(resolved);
     }
   }
-
+  //Save Handlers.
   const char *name = resolve ? JS_PROMISE_THEN_NAME : JS_PROMISE_CATCH_NAME;
   JsVar *c = jsvObjectGetChildIfExists(parent, name);
   if (!c) {
@@ -483,10 +483,11 @@ void _jswrap_promise_add(JsVar *parent, JsVar *callback, bool resolve) {
     }
     jsvUnLock(c);
   }
-  //So here we queue a resolve event.
+  //Should the callback be instantly fired???
   //Usually this would get queued by the asynchronous executor part of the promise, but if the promise was synchronous and instantly resolved, the queueResolve function would had fired, but done nothing because there was no handler/callback attached to it.  This situation is rare because the .then() would have to be called in an asynchronous callback to be called later than the queueResolve call.
   //Is there a chance this is called twice?
   if (resolveImmediately) { // If so, queue a resolve event
+    //resolve here, means fire callback from idle.
     _jswrap_promise_queueresolve(parent, resolveImmediatelyValue);
     jsvUnLock(resolveImmediatelyValue);
   }
@@ -523,6 +524,9 @@ static JsVar *jswrap_promise_get_chained_promise(JsVar *parent) {
 /*
   Add callback handlers...
   Create and return new promise, saved in parent.chain
+
+  This should actually always return a new promise
+  because they are independent chains.
 */
 JsVar *jswrap_promise_then(JsVar *parent, JsVar *onFulfilled, JsVar *onRejected) {
   _jswrap_promise_add(parent, onFulfilled, true);
