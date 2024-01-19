@@ -41,7 +41,7 @@ This is the built-in class for ES6 Promises
 
 void _jswrap_promise_queueresolve(JsVar *promise, JsVar *data);
 void _jswrap_promise_queuereject(JsVar *promise, JsVar *data);
-void _jswrap_promise_add(JsVar *parent, JsVar *callback, bool resolve);
+void _jswrap_promise_add(JsVar *parent, JsVar * next, JsVar *callback, bool resolve);
 
 bool _jswrap_promise_is_promise(JsVar *promise) {
   JsVar *constr = jspGetConstructor(promise);
@@ -51,7 +51,45 @@ bool _jswrap_promise_is_promise(JsVar *promise) {
 }
 
 /*
-STAGE 2 - PERFORM ACTION
+  The resolving promise, has to set its state to resolved.
+  And queue all callbacks registered, which each have a unique 'next' promise to in turn resolve
+  This creates an asynchronous recursive loop (aka chain).
+  It also handles nested promises who resolve another promise.
+  Unless no reactions were attached (no calls to then or catch).
+*/
+//This function is only called if next is set. A reason to resolve more.
+void _jswrap_promise_handle_reaction_call(JsVar* promise, JsVar* next, JsVar *result) {
+    jsiConsolePrintf("_jswrap_promise_handle_reaction_call()\n");
+    //wasError
+    JsVar *exception = jspGetException();
+    if (exception) {
+      _jswrap_promise_queuereject(next, exception);
+      jsvUnLock3(exception, result, next);
+      return;
+    }
+    //noError
+    if (_jswrap_promise_is_promise(result)) {
+      JsVar *fnres = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queueresolve, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
+      JsVar *fnrej = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queuereject, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
+      if (fnres && fnrej) {
+        jsvObjectSetChild(fnres, JSPARSE_FUNCTION_THIS_NAME, next); // bind 'this'
+        jsvObjectSetChild(fnrej, JSPARSE_FUNCTION_THIS_NAME, next); // bind 'this'
+        // When this 'inner' promise resolves, it will resolve outer.
+        _jswrap_promise_add(result, next, fnres, true);
+        _jswrap_promise_add(result, next, fnrej, false);
+      }
+      jsvUnLock2(fnres,fnrej);
+    } else {
+      //We returned a non-promise.
+      //Continue the loop ;)
+      _jswrap_promise_queueresolve(next, result);
+    }  
+    jsvUnLock2(next,result);
+}
+
+/*
+RESOLVE/REJECT ASYNCRHONOUS CALLBACK - STAGE 2
+EXECUTECALLBACKS.
 
 promise - which promise we are resolving/rejecting
 data - the value/error we are resolving/rejecting with
@@ -62,119 +100,108 @@ Executes Settled/Rejected handlers, fn, can be array due to multiple .then calls
 If there is exception, it rejects the promise and returns.
 else:
 Resolves the .then() shell promise accordingly.
-
 */
-void _jswrap_promise_resolve_or_reject(JsVar *promise, JsVar *data, JsVar *fn) {
-  // remove any existing handlers since we already have them in `fn`
-  // If while we're iterating below a function re-adds to the chain then
-  // we can execute that later
-  // https://github.com/espruino/Espruino/issues/894#issuecomment-402553934
-  jsvObjectRemoveChild(promise, JS_PROMISE_THEN_NAME); // remove 'resolve' and 'reject' handlers
-  jsvObjectRemoveChild(promise, JS_PROMISE_CATCH_NAME); // remove 'resolve' and 'reject' handlers
-  JsVar *chainedPromise = jsvObjectGetChildIfExists(promise, "chain");
-  jsvObjectRemoveChild(promise, "chain"); // unlink chain
-  // execute handlers from `fn`
-  JsVar *result = 0;
-  if (jsvIsArray(fn)) {
-    JsvObjectIterator it;
-    jsvObjectIteratorNew(&it, fn);
-    bool first = true;
-    while (jsvObjectIteratorHasValue(&it)) {
-      JsVar *f = jsvObjectIteratorGetValue(&it);
-      JsVar *v = jspExecuteFunction(f, promise, 1, &data);
-      if (first) {
-        first = false;
-        result = v;
-      } else jsvUnLock(v);
-      jsvUnLock(f);
-      jsvObjectIteratorNext(&it);
-    }
-    jsvObjectIteratorFree(&it);
-  } else if (fn) {
-    result = jspExecuteFunction(fn, promise, 1, &data);
-  }
-
-  JsVar *exception = jspGetException();
-  if (exception) {
-    _jswrap_promise_queuereject(chainedPromise, exception);
-    jsvUnLock3(exception, result, chainedPromise);
-    return;
-  }
-
-  //Update the new returned promise's state/value
-  if (chainedPromise) {
-    //If we returned a promise...
-    if (_jswrap_promise_is_promise(result)) {
-      // points the child promise's settled/resolved firing
-      // to resolve the outer promise.
-      JsVar *fnres = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queueresolve, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
-      JsVar *fnrej = jsvNewNativeFunction((void (*)(void))_jswrap_promise_queuereject, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
-      if (fnres && fnrej) {
-        //the callbacks' have their this set outer promise.
-        jsvObjectSetChild(fnres, JSPARSE_FUNCTION_THIS_NAME, chainedPromise); // bind 'this'
-        jsvObjectSetChild(fnrej, JSPARSE_FUNCTION_THIS_NAME, chainedPromise); // bind 'this'
-
-        //But the 'this' of the callbacks will point to the outer-new Promise.
-        //Equivalently calling .then(resolve,reject) on the inner-returned Promise
-        //Thus creating more callbacks for it when it resolves.
-        //When the inner-returned promise resolves its-self, it will trigger these callbacks, which will in turn resolve the outer-returned promise.
-
-        //Add Fullfilled Handler - yet they are resolve()
-        _jswrap_promise_add(result, fnres, true);
-        //Add Rejected Handler - yet they are reject()
-        _jswrap_promise_add(result, fnrej, false);
-      }
-      jsvUnLock2(fnres,fnrej);
-    } else {
-      //We returned a non-promise.
-      _jswrap_promise_queueresolve(chainedPromise, result);
-    }
-  }
-  jsvUnLock2(result, chainedPromise);
-}
 /*
-  We have been requested to resolve/reject a promise.
-  STAGE ONE - VALIDATE
+  RESOLVE/REJECT ASYNCRHONOUS CALLBACK - STAGE 1
   finds the nearest handler by iterating the chain.
+
+  ----SHOULD RESOLVE-----
+  check if already resolved : return
+  set already resolved
+  resolving self : reject("Unable to resolve self")
+  resolve basic value: resolve2...
+  handle thenables
+  handle recursive resolve
+
+
+  resolve2:
+      if state !== pending:
+          throw("already settled");
+      state = fulfilled
+      runAllonFullfilled, with their corresponding attached new Promise.( supports multiple chains ).
+
+  ----SHOULD REJECT----
+  check if already resolved: return
+  set already resolved
+  if state !== pending:
+    throw("already settled")
+  state = rejected
+  runAllonRejected, with their corresponding attached new Promise. ( supports multiple chains ).
+
+  ---DOES----
+  throw error if resolving promise.
+  resolve? set resolved.
+  do we have a handler?
+    find a handler by iterating chain
+  if we have handler for THIS promise, ContinueRejectionResolving
+  else we have no handlers, were we rejecting? throw the error.
+
+  ContinueRejectionResolving:
+    remove handlers and chain from promise
+    executes handlers
+    if any handler errored, queues reject, and returns (This should queue reject for the new Promise associated, not all same.)
+    resolve the new Promise
+    handles 1 step recursive Promise resolution.
+
+  ---DOES NOT---
+  check if already resolved
+  resolving self: reject
+
+
+  handle thenables
+  handle recursive resolve
 */
-void _jswrap_promise_resolve_or_reject_chain(JsVar *promise, JsVar *data, bool resolve) {
-  const char *eventName = resolve ? JS_PROMISE_THEN_NAME : JS_PROMISE_CATCH_NAME;
-  if (_jswrap_promise_is_promise(data)) {
-    jsExceptionHere(JSET_ERROR, "Resolving a Promise with a value that is a Promise is not currently supported");
+/*
+  The callback is now stored in promise.thn.cb or promise.cat.cb
+  Intended to update the resolve state of promise.thn.next or promise.cat.next
+*/
+void _jswrap_promise_resolve_or_reject(JsVar *promise, JsVar *data, JsVar *resolve) {
+  jsiConsolePrintf("_jswrap_promise_resolve_or_reject()\n");
+  JsVar *isResolved = jsvFindChildFromString(promise, JS_PROMISE_RESOLVED_NAME);
+  if (isResolved){
+    jsvUnLock(isResolved);
     return;
   }
-  // find the nearest handler by iterating chain
-  JsVar *fn = jsvObjectGetChildIfExists(promise, eventName);
-  if (!fn) {
-    JsVar *chainedPromise = jsvObjectGetChildIfExists(promise, "chain");
-    while (chainedPromise) {
-      fn = jsvObjectGetChildIfExists(chainedPromise, eventName);
-      if (fn) {
-        //We have found a handler! By doing so, we have made the chain smaller.
-        _jswrap_promise_resolve_or_reject(chainedPromise, data, fn);
-        jsvUnLock2(fn, chainedPromise);
-        return;
-      }
-      JsVar *n = jsvObjectGetChildIfExists(chainedPromise, "chain");
-      jsvUnLock(chainedPromise);
-      chainedPromise = n;
-    }
-  }
-  //fn=true = Found handler in THIS parent.
-  //fn=false = No handler found at all.
+  jsvObjectSetChild(promise, JS_PROMISE_RESOLVED_NAME, data);
 
-  //========================
-  //Sets resolved.!
-  //========================
-  if (resolve)
-    jsvObjectSetChild(promise, JS_PROMISE_RESOLVED_NAME, data);
-  if (fn) {
-    //There was initial handler for THIS promise.
-    _jswrap_promise_resolve_or_reject(promise, data, fn);
-    jsvUnLock(fn);
+  const char *eventName = resolve ? JS_PROMISE_THEN_NAME : JS_PROMISE_CATCH_NAME;
+  JsVar *reactions = jsvObjectGetChildIfExists(promise, eventName);
+  if (reactions) {
+    //=============================================================================
+    //This will call all callbacks, but they all have different next/target promises for which
+    //they resolve...
+    //=============================================================================
+    // reactions is actually an object or array of objects, of form {cb:,next:}
+    if (jsvIsArray(reactions)) {
+      JsvObjectIterator it;
+      jsvObjectIteratorNew(&it, reactions);   
+      while (jsvObjectIteratorHasValue(&it)) {
+        JsVar *reactObj = jsvObjectIteratorGetValue(&it);
+        JsVar * f = jsvObjectGetChildIfExists(reactObj,"cb");
+        if (f) {
+          JsVar *v = jspExecuteFunction(f, promise, 1, &data);
+          JsVar * nextProm = jsvObjectGetChildIfExists(reactObj,"next");
+          if (nextProm)
+            _jswrap_promise_handle_reaction_call(promise,nextProm,v);
+          jsvUnLock(f);
+        }
+        jsvObjectIteratorNext(&it);
+      }
+      jsvObjectIteratorFree(&it);
+    } else if (reactions) {
+      // Non-array , size==1
+      JsVar * f = jsvObjectGetChildIfExists(reactions,"cb");
+      if (f) {
+        JsVar *v = jspExecuteFunction(f, promise, 1, &data);
+        JsVar * nextProm = jsvObjectGetChildIfExists(reactions,"next");
+        if (nextProm)
+          _jswrap_promise_handle_reaction_call(promise,nextProm,v);
+        jsvUnLock(f);
+      }
+    }
+    jsvUnLock(reactions);
   } else if (!resolve) {
-    //No handler found! Thus it is unhandled.
-    //A promise has been rejected, but no handler set.
+    // Unhandled and rejected
     JsVar *previouslyResolved = jsvFindChildFromString(promise, JS_PROMISE_RESOLVED_NAME);
     if (!previouslyResolved) {
       jsExceptionHere(JSET_ERROR, "Unhandled promise rejection: %v", data);
@@ -191,15 +218,23 @@ void _jswrap_promise_resolve_or_reject_chain(JsVar *promise, JsVar *data, bool r
 /*
   RESOLVE WRAPPER
   find handler, run handler, update shell promise. (p1.chain)
+
+  =================================================================================================
+=================================================================================================
+  =======================================RESOLVE()=============================================================
+  =================================================================================================
+  =================================================================================================
 */
 void _jswrap_promise_resolve(JsVar *promise, JsVar *data) {
-  _jswrap_promise_resolve_or_reject_chain(promise, data, true);
+  _jswrap_promise_resolve_or_reject(promise, data, true);
 }
 /*
-  QUEUE STAGE - RESOLVE
+  PASSED AS ARGUMENTS TO THE EXECUTOR.
   find handler, run handler, update shell promise. (p1.chain)
+
 */
 void _jswrap_promise_queueresolve(JsVar *promise, JsVar *data) {
+  jsiConsolePrintf("_jswrap_promise_queueresolve()\n");
   JsVar *fn = jsvNewNativeFunction((void (*)(void))_jswrap_promise_resolve, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
   if (!fn) return;
   jsvObjectSetChild(fn, JSPARSE_FUNCTION_THIS_NAME, promise); // bind 'this'
@@ -209,15 +244,22 @@ void _jswrap_promise_queueresolve(JsVar *promise, JsVar *data) {
 /*
   REJECT WRAPPER
   find handler, run handler, update shell promise. (p1.chain)
+
+    =================================================================================================
+=================================================================================================
+  =======================================REJECT()=============================================================
+  =================================================================================================
+  =================================================================================================
 */
 void _jswrap_promise_reject(JsVar *promise, JsVar *data) {
-  _jswrap_promise_resolve_or_reject_chain(promise, data, false);
+  _jswrap_promise_resolve_or_reject(promise, data, false);
 }
 /*
-  QUEUE STAGE - REJECT
+  PASSED AS ARGUMENTS TO THE EXECUTOR.
   find handler, run handler, update shell promise. (p1.chain)
 */
 void _jswrap_promise_queuereject(JsVar *promise, JsVar *data) {
+  jsiConsolePrintf("_jswrap_promise_queuereject()\n");
   JsVar *fn = jsvNewNativeFunction((void (*)(void))_jswrap_promise_reject, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS));
   if (!fn) return;
   jsvObjectSetChild(fn, JSPARSE_FUNCTION_THIS_NAME, promise); // bind 'this'
@@ -256,37 +298,38 @@ JsVar *jspromise_create() {
 }
 
 /*
-  The internal resolve function.
+  WRAPPER TO QUEUE RESOLVE
 */
-/// Resolve the given promise
 void jspromise_resolve(JsVar *promise, JsVar *data) {
   _jswrap_promise_queueresolve(promise, data);
 }
-/*
-  The internal reject function.
-*/
+
 /// Reject the given promise
 void jspromise_reject(JsVar *promise, JsVar *data) {
   _jswrap_promise_queuereject(promise, data);
 }
 
 
-/*JSON{
-  "type" : "constructor",
-  "class" : "Promise",
-  "name" : "Promise",
-  "ifndef" : "SAVE_ON_FLASH",
-  "generate" : "jswrap_promise_constructor",
-  "params" : [
-    ["executor","JsVar","A function of the form `function (resolve, reject)`"]
-  ],
-  "return" : ["JsVar","A Promise"],
-  "typescript": "new<T>(executor: (resolve: (value: T) => void, reject: (reason?: any) => void) => void): Promise<T>;"
-}
-Create a new Promise. The executor function is executed immediately (before the
-constructor even returns) and
- */
+/*
+    =================================================================================================
+=================================================================================================
+  =======================================NEW()=============================================================
+  =================================================================================================
+  =================================================================================================
+
+  ---SHOULD---
+  Does executor NOT exist -> throw error ("Executor function required in promise constructor") 
+  Is executor NOT a function -> throw error ("Executor must be callable") 
+
+  Execute Executor, rejecting all errors thrown.
+
+  ---DOES NOT---
+  Does executor NOT exist -> throw error ("Executor function required in promise constructor")
+
+  Is executor NOT a function -> throw error ("Executor must be callable") 
+*/
 JsVar *jswrap_promise_constructor(JsVar *executor) {
+  jsiConsolePrintf("jswrap_promise_constructor()\n");
   JsVar *obj = jspromise_create();
   if (obj) {
     // create resolve and reject
@@ -295,13 +338,19 @@ JsVar *jswrap_promise_constructor(JsVar *executor) {
         jsvNewNativeFunction((void (*)(void))_jswrap_promise_queuereject, JSWAT_VOID|JSWAT_THIS_ARG|(JSWAT_JSVAR<<JSWAT_BITS))
     };
     // bind 'this' to functions
+    // so that when resolve() is called, its called, this points to newly created Promise.
     if (args[0]) jsvObjectSetChild(args[0], JSPARSE_FUNCTION_THIS_NAME, obj);
     if (args[1]) jsvObjectSetChild(args[1], JSPARSE_FUNCTION_THIS_NAME, obj);
     // call the executor
+
+    //EMULATES A TRY BLOCK
     JsExecFlags oldExecute = execInfo.execute;
     if (executor) jsvUnLock(jspeFunctionCall(executor, 0, obj, false, 2, args));
     execInfo.execute = oldExecute;
+    //Ah, it means to not let the errors be REAL errors.(affect flow)
     jsvUnLockMany(2, args);
+
+    //errors...
     JsVar *exception = jspGetException();
     if (exception) {
       _jswrap_promise_queuereject(obj, exception);
@@ -311,22 +360,8 @@ JsVar *jswrap_promise_constructor(JsVar *executor) {
   return obj;
 }
 
-/*JSON{
-  "type" : "staticmethod",
-  "class" : "Promise",
-  "name" : "all",
-  "ifndef" : "SAVE_ON_FLASH",
-  "generate" : "jswrap_promise_all",
-  "params" : [
-    ["promises","JsVar","An array of promises"]
-  ],
-  "return" : ["JsVar","A new Promise"],
-  "typescript": "all(promises: Promise<any>[]): Promise<void>;"
-}
-Return a new promise that is resolved when all promises in the supplied array
-are resolved.
-*/
 JsVar *jswrap_promise_all(JsVar *arr) {
+  jsiConsolePrintf("jswrap_promise_all()\n");
   if (!jsvIsIterable(arr)) {
     jsExceptionHere(JSET_TYPEERROR, "Expecting something iterable, got %t", arr);
     return 0;
@@ -394,6 +429,7 @@ Return a new promise that is already resolved (at idle it'll call `.then`)
   Promise.resolve()
 */
 JsVar *jswrap_promise_resolve(JsVar *data) {
+  jsiConsolePrintf("jswrap_promise_resolve()\n");
   JsVar *promise = 0;
   // return the promise passed as value, if the value was a promise object.
   if (_jswrap_promise_is_promise(data))
@@ -431,28 +467,23 @@ Return a new promise that is already rejected (at idle it'll call `.catch`)
   Promise.reject()
 */
 JsVar *jswrap_promise_reject(JsVar *data) {
+  jsiConsolePrintf("jswrap_promise_reject()\n");
   JsVar *promise = jspromise_create();
   if (!promise) return 0;
   jspromise_reject(promise, data);
   return promise;
 }
 
-/*
-  .then calls this.
-  Append onSettled handler.
-*/
-void _jswrap_promise_add(JsVar *parent, JsVar *callback, bool resolve) {
+// Next promise created by .then or .catch
+void _jswrap_promise_add(JsVar *parent, JsVar * next, JsVar *callback, bool resolve) {
+  jsiConsolePrintf("_jswrap_promise_add()\n");
   if (!jsvIsFunction(callback)) {
     jsExceptionHere(JSET_TYPEERROR, "Callback is not a function");
     return;
   }
-
   bool resolveImmediately = false;
   JsVar *resolveImmediatelyValue = 0;
-
-  //Are we adding an onSettled callback?
   if (resolve) {
-    // Check to see if promise has already been resolved
     /* Note: we use jsvFindChildFromString not ObjectGetChild so we get the name.
      * If we didn't then we wouldn't know if it was resolved, but with undefined */
     JsVar *resolved = jsvFindChildFromString(parent, JS_PROMISE_RESOLVED_NAME);
@@ -462,49 +493,82 @@ void _jswrap_promise_add(JsVar *parent, JsVar *callback, bool resolve) {
       resolveImmediatelyValue = jsvSkipNameAndUnLock(resolved);
     }
   }
-  //Save Handlers.
+  
+  // Binding to next promise
+  //We set it to be an object, of type { cb: , next:}
+  //.thn = {cb:,next:}
+  //.cat = {cb:,next:}
+  JsVar *reaction = jsvNewObject();
+  jsvObjectSetChild(reaction, "cb", callback);
+  jsvObjectSetChild(reaction, "next", next);
+
+  // Saving to promise
   const char *name = resolve ? JS_PROMISE_THEN_NAME : JS_PROMISE_CATCH_NAME;
   JsVar *c = jsvObjectGetChildIfExists(parent, name);
   if (!c) {
-    //No handler is set. Set one.
-    jsvObjectSetChild(parent, name, callback);
+    // Initially unset, set .thn .cat
+    jsvObjectSetChildAndUnLock(parent, name, reaction);
   } else {
-    //Handler is set.
+    // Append
     if (jsvIsArray(c)) {
       //If its an array, append to it.
-      jsvArrayPush(c, callback);
+      jsvArrayPush(c, reaction);
+      jsvUnlock(reaction);
     } else {
       //Its not an array.
       //Turn it into an array, to store > 1 callbacks.
-      JsVar *fns[2] = {c,callback};
+      //Current value paired into an array with new value.
+      JsVar *fns[2] = {c,reaction};
       JsVar *arr = jsvNewArray(fns, 2);
-      jsvObjectSetChild(parent, name, arr);
-      jsvUnLock(arr);
+      jsvObjectSetChildAndUnLock(parent, name, arr);
     }
     jsvUnLock(c);
   }
-  //Should the callback be instantly fired???
-  //Usually this would get queued by the asynchronous executor part of the promise, but if the promise was synchronous and instantly resolved, the queueResolve function would had fired, but done nothing because there was no handler/callback attached to it.  This situation is rare because the .then() would have to be called in an asynchronous callback to be called later than the queueResolve call.
-  //Is there a chance this is called twice?
   if (resolveImmediately) { // If so, queue a resolve event
-    //resolve here, means fire callback from idle.
     _jswrap_promise_queueresolve(parent, resolveImmediatelyValue);
     jsvUnLock(resolveImmediatelyValue);
   }
 }
 
+
 /*
-  Create a new promise when returning from .then()
-  Store it in parent.chain
+  Add callback handlers...
+  Create and return new promise, saved in parent.chain
+
+  This should actually always return a new promise
+  because they are independent chains.
+  =================================================================================================
+=================================================================================================
+  =======================================THEN()=============================================================
+  =================================================================================================
+  =================================================================================================
+
+  --SHOULD--
+  ensure this == promise?
+  cbs are callbable?, else set to undefined.
+  associate the newly created promise with the callbacks, so that when the callbacks are fired, they can retrieve the promise.
+
+  check for pending to push callbacks to fullfilled/rejected arrays
+  check for fulfilled to fire the callback ...
+  check for rejected to fire the callback ...
+
+  set ishandled
+
+  return a new promise always.
+
+  --DOES NOT--
+  return a new promise always.
+  call error if already errored? -- no such thing as late error handling, error would have thrown, unpreventable.
+  saves handlers even if it calls them, un-necessary?
+  should allow callback to be not a function, .then(undefined,catch) is valid.
+  could implement microqueue so that promise has priority
+
+  --DOES--
+  checks if callback is a function -> throws error.
+  sets prom.chain , which is the association of the callback to the newly created promise.
+  saves handlers
+  calls callback if already resolved.
 */
-static JsVar *jswrap_promise_get_chained_promise(JsVar *parent) {
-  JsVar *chainedPromise = jsvObjectGetChildIfExists(parent, "chain");
-  if (!chainedPromise) {
-    chainedPromise = jspNewObject(0, "Promise");
-    jsvObjectSetChild(parent, "chain", chainedPromise);
-  }
-  return chainedPromise;
-}
 
 /*JSON{
   "type" : "method",
@@ -520,20 +584,20 @@ static JsVar *jswrap_promise_get_chained_promise(JsVar *parent) {
   "typescript": "then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | Promise<TResult1>) | undefined | null, onrejected?: ((reason: any) => TResult2 | Promise<TResult2>) | undefined | null): Promise<TResult1 | TResult2>;"
 }
  */
-
-/*
-  Add callback handlers...
-  Create and return new promise, saved in parent.chain
-
-  This should actually always return a new promise
-  because they are independent chains.
-*/
 JsVar *jswrap_promise_then(JsVar *parent, JsVar *onFulfilled, JsVar *onRejected) {
-  _jswrap_promise_add(parent, onFulfilled, true);
+  jsiConsolePrintf("jswrap_promise_then()\n");
+  JsVar *resultingProm = jspNewObject(0, "Promise");
+  
+
+  //allow undefined for pass-through.
+  if (onFulfilled)
+    _jswrap_promise_add(parent, resultingProm, onFulfilled, true);
   if (onRejected)
-    _jswrap_promise_add(parent, onRejected, false);
-  return jswrap_promise_get_chained_promise(parent);
+    _jswrap_promise_add(parent, resultingProm, onRejected, false);
+  
+  return resultingProm;
 }
+
 
 /*JSON{
   "type" : "method",
@@ -547,11 +611,13 @@ JsVar *jswrap_promise_then(JsVar *parent, JsVar *onFulfilled, JsVar *onRejected)
   "return" : ["JsVar","The original Promise"]
 }
  */
-/*
-  Same as above
-*/
 JsVar *jswrap_promise_catch(JsVar *parent, JsVar *onRejected) {
-  _jswrap_promise_add(parent, onRejected, false);
-  return jswrap_promise_get_chained_promise(parent);
+  jsiConsolePrintf("jswrap_promise_catch()\n");
+  JsVar *resultingProm = jspNewObject(0, "Promise");
+
+  //allow undefined for pass-through.
+  _jswrap_promise_add(parent, resultingProm, onRejected, false);
+
+  return resultingProm;
 }
 #endif // ESPR_NO_PROMISES

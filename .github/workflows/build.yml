@@ -47,6 +47,7 @@ jobs:
       with:
         name: ${{ matrix.board }}
         path: |
+          bin/*
           bin/*.bin
           bin/*.hex
           bin/*.tgz
