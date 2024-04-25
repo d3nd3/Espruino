@@ -49,7 +49,7 @@ jobs:
     - name: make ${{ matrix.board }}
       env:
         TRAVIS: 1
-        RELEASE: 1
+        DEBUG: 1
         BOARD: ${{ matrix.board }} 
         UPLOADTOKEN: ${{ secrets.UPLOADTOKEN }}  
       run: |
@@ -84,7 +84,7 @@ jobs:
     - name: make ${{ matrix.board }}
       env:
         TRAVIS: 1
-        RELEASE: 1
+        DEBUG: 1
         DFU_UPDATE_BUILD: 1
         BOARD: ${{ matrix.board }} 
         UPLOADTOKEN: ${{ secrets.UPLOADTOKEN }}  
@@ -119,7 +119,7 @@ jobs:
     - name: make ${{ matrix.board }}
       env:
         TRAVIS: 1
-        RELEASE: 1
+        DEBUG: 1
         PAD_FOR_BOOTLOADER: 1
         BOARD: ${{ matrix.board }} 
         UPLOADTOKEN: ${{ secrets.UPLOADTOKEN }}  
@@ -154,7 +154,7 @@ jobs:
     - name: make ${{ matrix.board }}
       env:
         TRAVIS: 1
-        RELEASE: 1
+        DEBUG: 1
         BOARD: ${{ matrix.board }} 
         UPLOADTOKEN: ${{ secrets.UPLOADTOKEN }}  
       run: |
