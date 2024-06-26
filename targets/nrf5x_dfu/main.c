@@ -13,7 +13,7 @@
 /** @file
  *
  * @defgroup bootloader_secure main.c
- * @{
+ * @
  * @ingroup dfu_bootloader_api
  * @brief Bootloader project main file for secure DFU.
  *
