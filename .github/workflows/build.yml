@@ -86,6 +86,7 @@ jobs:
         TRAVIS: 1
         RELEASE: 1
         DFU_UPDATE_BUILD: 1
+        BOOTLOADER: 1
         BOARD: ${{ matrix.board }} 
         UPLOADTOKEN: ${{ secrets.UPLOADTOKEN }}  
       run: |
