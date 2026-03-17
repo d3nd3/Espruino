@@ -818,7 +818,7 @@ APP_TIMER_DEF(m_peripheral_poll_timer_id);
 #endif
 
 /// Is I2C busy? if so we'll skip one reading in our interrupt so we don't overlap
-bool i2cBusy;
+volatile bool i2cBusy;
 /// How often should be poll for accelerometer/compass data?
 volatile uint16_t pollInterval; // in ms
 /// Timer used for power save (lowering the poll interval)
@@ -1056,7 +1056,7 @@ typedef enum {
   JSBT_MIDNIGHT = 1<<30, ///< Fired at midnight each day - for housekeeping tasks
   JSBT_HRM_PENDING_READ = 1U<<31, ///< Pending HRM read due to interrupt
 } JsBangleTasks;
-JsBangleTasks bangleTasks;
+volatile JsBangleTasks bangleTasks;
 
 const char *lockReason = 0; ///< If JSBT_LOCK/UNLOCK is set, this is the reason (if known) - should point to a constant string (not on stack!)
 void _jswrap_banglejs_setLocked(bool isLocked, const char *reason);
