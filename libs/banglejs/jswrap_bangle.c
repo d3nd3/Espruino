@@ -1054,6 +1054,7 @@ typedef enum {
   JSBT_HRM_INSTANT_DATA = 1<<28, ///< Instant heart rate data
   JSBT_HEALTH = 1<<29, ///< New 'health' event
   JSBT_MIDNIGHT = 1<<30, ///< Fired at midnight each day - for housekeeping tasks
+  JSBT_HRM_PENDING_READ = 1U<<31, ///< Pending HRM read due to interrupt
 } JsBangleTasks;
 JsBangleTasks bangleTasks;
 
@@ -1092,6 +1093,11 @@ void jswrap_banglejs_pwrHRM(bool on) {
 #ifdef HEARTRATE_PIN_EN
   jshPinOutput(HEARTRATE_PIN_EN, on);
 #endif
+}
+
+void jswrap_banglejs_request_hrm_read(void) {
+  bangleTasks |= JSBT_HRM_PENDING_READ;
+  jshHadEvent();
 }
 
 void jswrap_banglejs_pwrBacklight(bool on) {
@@ -4390,6 +4396,7 @@ bool jswrap_banglejs_idle() {
   if (!bangle) {
     bangleTasks = JSBT_NONE;
   }
+  bool keepHrmPending = false;
   if (bangleTasks != JSBT_NONE) {
     if (bangleTasks & JSBT_LCD_OFF) jswrap_banglejs_setLCDPower(0);
     if (bangleTasks & JSBT_LCD_ON) jswrap_banglejs_setLCDPower(1);
@@ -4543,6 +4550,18 @@ bool jswrap_banglejs_idle() {
         hrm_get_hrm_info(o);
         jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"HRM", &o, 1);
         jsvUnLock(o);
+      }
+    }
+    if (bangleTasks & JSBT_HRM_PENDING_READ) {
+      if (!i2cBusy) {
+#ifdef HEARTRATE_DEVICE_VC31
+        extern void vc31_process_data(void);
+        i2cBusy = true;
+        vc31_process_data();
+        i2cBusy = false;
+#endif
+      } else {
+        keepHrmPending = true;
       }
     }
 #endif
@@ -4713,7 +4732,7 @@ bool jswrap_banglejs_idle() {
   }
 #endif
   jsvUnLock(bangle);
-  bangleTasks = JSBT_NONE;
+  bangleTasks = keepHrmPending ? JSBT_HRM_PENDING_READ : JSBT_NONE;
 #if defined(LCD_CONTROLLER_LPM013M126) || defined(LCD_CONTROLLER_ST7789V) || defined(LCD_CONTROLLER_ST7735) || defined(LCD_CONTROLLER_GC9A01)
   // Automatically flip!
   if (graphicsInternal.data.modMaxX >= graphicsInternal.data.modMinX) {

@@ -559,8 +559,15 @@ static void vc31b_slot_adjust(int slotNum) {
 
 }
 
+extern void jswrap_banglejs_request_hrm_read(void);
+
 void vc31_irqhandler(bool state, IOEventFlags flags) {
   if (!state || !hrmCallback) return;
+  jswrap_banglejs_request_hrm_read();
+}
+
+void vc31_process_data(void) {
+  if (!hrmCallback) return;
 
   // Have we adjusted settings since this value?
   if (vcType == VC31_DEVICE) {
