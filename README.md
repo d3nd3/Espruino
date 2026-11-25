@@ -1,5 +1,8 @@
 Espruino JavaScript for Microcontrollers
 ========================================
+
+Prefer pictures? Start with **[HUMANS.md](HUMANS.md)**.
+
 <pre>
  _____                 _
 |   __|___ ___ ___ _ _|_|___ ___

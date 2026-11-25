@@ -1,0 +1,70 @@
+# Espruino — system overview
+# A thin fork-origin note: an untouched mirror of espruino/Espruino.
+# Zones run left to right: origin -> core -> state -> external.
+# Style classes set strokes only, so light and dark stay readable.
+
+title: |md
+  # Espruino
+  A JavaScript interpreter for microcontrollers, small enough for 128 kB flash and 8 kB RAM.
+| {near: top-center}
+
+direction: right
+grid-columns: 2
+grid-rows: 2
+horizontal-gap: 170
+vertical-gap: 110
+
+origin: Origin {
+  direction: down
+
+  upstream: `espruino/Espruino` · Gordon Williams · MPL 2.0
+  mirror: `d3nd3/Espruino` · one docs commit of ours · still 71 behind upstream
+  dirt: untracked `compile_commands.json` · a local build artefact, not ours to commit
+  reading: `README_BuildProcess.md` is the real architecture text, the README is a shop front
+  protocol: `README_Protocol.md` documents the wire format the IDE speaks
+}
+
+state: State {
+  direction: down
+
+  flash: `save()` pretokenises code and stores it in flash, re-read on every boot
+  ram: one flat JsVar array · its size is `variables` in the board file, and overflow shows up at build time
+  build: `gen/`, `build/`, `obj/` · gitignored and regenerated per board
+}
+
+core: Core {
+  direction: down
+
+  board: `boards/BOARD.py` · 60 board files — pins, RAM, console, variable count
+  gen: `scripts/build_platform_config.py`, `build_pininfo.py`, `build_jswrapper.py`, `build_linker.py` → `gen/`
+  interp: `src/jsparse.c` · recursive-descent parser that executes as it walks, behind `src/jslex.c`
+  heap: `src/jsvar.c` · every JS value is a reference-counted JsVar slot, not a real object
+  natives: `src/jswrap_*.c` · 96 wrapper files, `gen/jswrapper.c` is the flash symbol table lookup
+  ports: `targets/nrf5x`, `stm32`, `stm32_ll`, `esp32`, `esp8266`, `linux`, `emscripten`
+  jslibs: `libs/` · feature C libs plus `libs/js/*.min.js` modules listed per board and embedded in flash
+}
+
+ext: External {
+  direction: down
+
+  tooling: EspruinoTools and the Web IDE · serial, BLE or TCP on port 23, `>` prompt protocol
+  sdk: nRF5 SDK, STM32 HAL, ESP-IDF · per target, referenced rather than committed
+  toolchain: arm-none-eabi-gcc, xtensa · gitignored, supplied by whoever builds
+  site: espruino.com · docs, nightly binaries, board JSON
+}
+
+origin -> core: upstream tree, unmodified
+core -> state: tokenised code in flash, JsVar heap in RAM
+core -> ext: built against an SDK, driven by the IDE
+
+classes: {
+  origin: {style: {stroke: "#2f6fbf"}}
+  core: {style: {stroke: "#2f8f5f"}}
+  state: {style: {stroke: "#a86a12"; stroke-dash: 3}}
+  ext: {style: {stroke: "#8a4fbf"; stroke-dash: 5}}
+}
+
+origin.class: origin
+core.class: core
+state.class: state
+ext.class: ext
